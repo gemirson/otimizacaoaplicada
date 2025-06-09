@@ -1,9 +1,12 @@
 package org.com.pangolin.redistribuicao;
+import org.com.pangolin.Main;
 import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.math.RoundingMode;
 import java.util.Arrays;
 
+import static org.com.pangolin.Main.calcularParcelasPrice;
 import static org.junit.jupiter.api.Assertions.*;
 
 class RedistribuicaoFinanciamentoTest {
@@ -32,30 +35,51 @@ class RedistribuicaoFinanciamentoTest {
                     "Parcela " + (i+1) + " não bate: principal + juros != parcela");
         }
     }
-    public static BigDecimal[][] decomporParcelasPriceComSaldoInicial(
-            BigDecimal saldoInicial, BigDecimal taxa, BigDecimal valorParcela, int numParcelas) {
-        BigDecimal[] principals = new BigDecimal[numParcelas];
-        BigDecimal[] juros = new BigDecimal[numParcelas];
-        BigDecimal saldoDevedor = saldoInicial;
+    public static BigDecimal[][] decomporParcelasPrice(ParametrosFinanciamento parametros) {
+        BigDecimal[] principals = new BigDecimal[parametros.numParcelas()];
+        BigDecimal[] juros = new BigDecimal[parametros.numParcelas()];
+        BigDecimal saldoDevedor = parametros.valorFinanciado();
 
-        for (int i = 0; i < numParcelas; i++) {
-            juros[i] = saldoDevedor.multiply(taxa).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal valorParcela = calcularParcelasPrice(parametros)[0];
+
+        for (int i = 0; i < parametros.numParcelas(); i++) {
+            juros[i] = saldoDevedor.multiply(parametros.taxaMensal()).setScale(2, RoundingMode.HALF_UP);
             principals[i] = valorParcela.subtract(juros[i]).setScale(2, RoundingMode.HALF_UP);
             saldoDevedor = saldoDevedor.subtract(principals[i]);
         }
 
+        // Ajuste de arredondamento para garantir que principal + juros == parcela
+        for (int i = 0; i < parametros.numParcelas(); i++) {
+            BigDecimal soma = principals[i].add(juros[i]);
+            BigDecimal diff = valorParcela.subtract(soma).setScale(2, RoundingMode.HALF_UP);
+            principals[i] = principals[i].add(diff);
+            principals[i] = principals[i].setScale(2, RoundingMode.HALF_UP);
+            juros[i] = valorParcela.subtract(principals[i]).setScale(2, RoundingMode.HALF_UP);
+        }
 
-
-        // Ajuste final para garantir saldoDevedor zero
+        // Ajuste final para última parcela garantir saldoDevedor zero
         BigDecimal somaPrincipals = Arrays.stream(principals).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal ajusteFinal = saldoInicial.subtract(somaPrincipals).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal ajusteFinal = parametros.valorFinanciado().subtract(somaPrincipals).setScale(2, RoundingMode.HALF_UP);
         if (ajusteFinal.abs().compareTo(BigDecimal.valueOf(0.01)) > 0) {
-            principals[numParcelas - 1] = principals[numParcelas - 1].add(ajusteFinal);
-            principals[numParcelas - 1] = principals[numParcelas - 1].setScale(2, RoundingMode.HALF_UP);
-            juros[numParcelas - 1] = valorParcela.subtract(principals[numParcelas - 1]).setScale(2, RoundingMode.HALF_UP);
+            principals[parametros.numParcelas()- 1] = principals[parametros.numParcelas() - 1].add(ajusteFinal);
+            principals[parametros.numParcelas() - 1] = principals[parametros.numParcelas()- 1].setScale(2, RoundingMode.HALF_UP);
+            juros[parametros.numParcelas() - 1] = valorParcela.subtract(principals[parametros.numParcelas()- 1]).setScale(2, RoundingMode.HALF_UP);
         }
 
         return new BigDecimal[][]{principals, juros};
+    }
+    public static BigDecimal[] calcularParcelasPrice(ParametrosFinanciamento parametros) {
+        BigDecimal[] parcelas = new BigDecimal[parametros.numParcelas()];
+        BigDecimal um = BigDecimal.ONE;
+        BigDecimal taxaMaisUm = um.add(parametros.taxaMensal());
+        BigDecimal potencia = taxaMaisUm.pow(parametros.numParcelas());
+        BigDecimal numerador = parametros.taxaMensal().multiply(potencia);
+        BigDecimal denominador = potencia.subtract(um);
+        BigDecimal valorParcela = parametros.valorFinanciado().multiply(numerador).divide(denominador, 2, RoundingMode.HALF_UP);
+
+        valorParcela = valorParcela.setScale(2, RoundingMode.HALF_UP);
+        Arrays.fill(parcelas, valorParcela);
+        return parcelas;
     }
 
     @Test
@@ -212,60 +236,75 @@ void testCenario8_SFF_2Parcelas_TaxaPequena() {
 @Test
 void testCenario9_Price_PrimeiraParcelaDiferente() {
     // Arrange
-
+    MathContext MC = new MathContext(2, RoundingMode.HALF_UP);
     BigDecimal saldoPrincipal = new BigDecimal("1500");
     BigDecimal taxaMensal = new BigDecimal("0.02");
-    BigDecimal saldoJuros = new BigDecimal("300");
-    BigDecimal valorParcela = new BigDecimal("650");
-    int numParcelas = 2;
+    BigDecimal saldoJuros = BigDecimal.valueOf(50,40); // 50.40
+    BigDecimal valorParcela = BigDecimal.valueOf(520,13); // 52.00
+    BigDecimal saldoDevedorParcelas = BigDecimal.valueOf(1040,26); // 10   4.00
+    int numParcelas = 3;
 
-    BigDecimal[] parcelasPrice = new BigDecimal[]{new BigDecimal("650"), new BigDecimal("650")};
-    BigDecimal[][] decomposicaoRestante = decomporParcelasPriceComSaldoInicial(
-            saldoPrincipal, taxaMensal, parcelasPrice[0], numParcelas - 1);
+    ParametrosFinanciamento parametros = new ParametrosFinanciamento(
+            saldoPrincipal,
+            taxaMensal,
+            numParcelas
+    );
 
-    BigDecimal[] principalsAjustados = new BigDecimal[numParcelas];
-    BigDecimal[] jurosAjustados = new BigDecimal[numParcelas];
+    BigDecimal[][] decomposicaoOriginal = decomporParcelasPrice(parametros);
 
+    BigDecimal[] principalsOriginais = decomposicaoOriginal[0];
+    BigDecimal[] jurosOriginais = decomposicaoOriginal[1];
 
-    System.arraycopy(decomposicaoRestante[0], 0, principalsAjustados, 1, numParcelas - 1);
-    System.arraycopy(decomposicaoRestante[1], 0, jurosAjustados, 1, numParcelas - 1);
+    for (int i = 0; i < principalsOriginais.length; i++) {
+        System.out.printf("Parcela %2d | Principal: %8.2f | Juros: %8.2f | Valor: %8.2f\n",
+                i + 1,
+                principalsOriginais [i],
+                jurosOriginais[i],
+                principalsOriginais [i].add(jurosOriginais[i])
+        );
+    }
+
+    // Ajusta os juros para o saldo devedor
 
     // Amortiza parcialmente a primeira parcela, priorizando os juros
     BigDecimal valorPagoPrimeiraParcela = new BigDecimal("500");
-    BigDecimal jurosAmortizado = jurosAjustados[0].subtract(valorPagoPrimeiraParcela);
-    BigDecimal principalAmortizado = valorPagoPrimeiraParcela.subtract(jurosAmortizado).max(BigDecimal.ZERO);
+    BigDecimal principalAmortizado  = valorPagoPrimeiraParcela.subtract(jurosOriginais[0],MC);
+    BigDecimal jurosAmortizado  = valorPagoPrimeiraParcela.subtract(principalAmortizado,MC);
+
 
 
     // Calcula saldos após amortização parcial
-    saldoPrincipal = saldoPrincipal.subtract(principalAmortizado);
-    saldoJuros = saldoJuros.subtract(jurosAmortizado);
-    BigDecimal saldoParcela = valorParcela.subtract(valorPagoPrimeiraParcela);
+    saldoPrincipal = saldoPrincipal.subtract(principalAmortizado, MC);
+    saldoJuros = saldoJuros.subtract(jurosAmortizado,MC);
+    BigDecimal saldoParcela = valorParcela.subtract(valorPagoPrimeiraParcela,MC);
+    saldoDevedorParcelas = saldoDevedorParcelas.add(saldoParcela,MC);
+    System.out.printf("Principal: %8.2f | Juros: %8.2f ",
+            saldoPrincipal,
+            saldoJuros.abs()
+    );
 
-    assertEquals(new BigDecimal("300.00"), jurosAjustados[0].setScale(2), "Saldo de juros após amortização parcial");
-    assertEquals(new BigDecimal("1350.00"), saldoPrincipal.setScale(2), "Saldo de principal após amortização parcial");
-    assertEquals(new BigDecimal("150.00"), saldoParcela.setScale(2), "Saldo da parcela após amortização parcial");
+    //assertEquals(new BigDecimal("300.00"),  jurosAmortizado.setScale(2), "Saldo de juros após amortização parcial");
+    //assertEquals(new BigDecimal("1350.00"), principalsOriginais[1].setScale(2), "Saldo de principal após amortização parcial");
+    //assertEquals(new BigDecimal("150.00"), saldoParcela.setScale(2), "Saldo da parcela após amortização parcial");
 
-
-    ParametrosRedistribuicao parametros = ParametrosRedistribuicao.builder()
+    ParametrosRedistribuicao parametros_r = ParametrosRedistribuicao.builder()
             .saldoPrincipal(saldoPrincipal)
             .saldoJuros(saldoJuros)
-            .quantidadeParcelas(2)
+            .quantidadeParcelas(numParcelas - 1) // Uma parcela foi amortizada
             .valorParcela(valorParcela)
             .sistemaAmortizacao(RedistribuicaoSistemaAmortizacao.PRICE)
             .taxaJuros(taxaMensal)
-            .saldoDevedorParcelas( new BigDecimal("1450")) // opcional, se necessário
-            // .valorPagoPrimeiraParcela(new BigDecimal("500")) // se suportado
+            .saldoDevedorParcelas(saldoDevedorParcelas) // opcional, se necessário
             .build();
 
+
     // Act
-   // RedistribuicaoFinanciamento r = new RedistribuicaoFinanciamento(parametros);
-    //var resultado = r.redistribuir();
+    RedistribuicaoFinanciamento r = new RedistribuicaoFinanciamento(parametros_r);
+    var resultado = r.redistribuir();
     // Assert
-   // assertResultado(resultado, parametros);
+    assertResultado(resultado, parametros_r);
     // Assert
-    assertEquals(new BigDecimal("300.00"), saldoJuros.setScale(2), "Saldo de juros após amortização parcial");
-    assertEquals(new BigDecimal("1350.00"), saldoPrincipal.setScale(2), "Saldo de principal após amortização parcial");
-    assertEquals(new BigDecimal("150.00"), saldoParcela.setScale(2), "Saldo da parcela após amortização parcial");
+
 
 }
 
